@@ -2,6 +2,7 @@ import torch
 from causalvggt.models.vggt import CausalVGGT
 from stac.kv_manager import KVManager
 from stac.stac_voxel import STACVoxelKV
+from stac.vocache_kv import VoCacheVoxelKV
 from causalvggt.utils.geometry import unproject_depth_map_to_point_map
 from causalvggt.utils.pose_enc import pose_encoding_to_extri_intri
 
@@ -378,8 +379,15 @@ class StreamSession:
                     metrics["Memory(MB)"] = kv_mgr.get_memory_details()
                 self.stats = metrics
 
-        elif mode in ["window_chunk_merge"]:
+        elif mode in ["window_chunk_merge", "vocache", "kgtc"]:
             # Use Voxel attention to maintain a voxel + recent KV cache for the aggregator.
+            is_vocache = (mode == "vocache")
+            is_kgtc = (mode == "kgtc")
+            if is_kgtc:
+                from stac.kgtc_kv import KGTCVoxelKV
+                kv_cls = KGTCVoxelKV
+            else:
+                kv_cls = VoCacheVoxelKV if is_vocache else STACVoxelKV
             voxel_size = kwargs.get("voxel_size", 0.05)
             dist_thres = 2.0 * voxel_size
             kv_kwargs = deepcopy(kwargs)
@@ -401,14 +409,15 @@ class StreamSession:
                         "voxel_size": voxel_size,
                         "voxelize_layers": merge_layers,
                         "init_voxels": kwargs.get("voxel_num", 4096),
+                        "voxel_max": kwargs.get("voxel_max", 0),
                         "voxel_buf_cap": kwargs.get("voxel_buf_cap", 8),
                         "voxel_piv_cap": kwargs.get("voxel_piv_cap", 4),
                         "voxel_backend": kwargs.get("voxel_backend", "python"),
                         "sim_threshold": sim_threshold,
                         "replace_threshold": sim_threshold,
                         "score_threshold": 0.2,
-                        "slab_growth": 1024,
-                        "slab_cap": 10000,
+                        "slab_growth": kwargs.get("slab_growth", 1024),
+                        "slab_cap": kwargs.get("slab_cap", 10000),
                         "seg_size": 1,
                         "retrieval_size": kwargs.get("retrieval_size", -1),
                         "allocator": kwargs.get("allocator", "slab"),
@@ -418,7 +427,7 @@ class StreamSession:
                         "cold_frame_threshold": kwargs.get("cold_frame_threshold", 5),
             }
             kv_kwargs.update(merger_kwargs)
-            kv_kwargs = self.register_kv_mgr(mode, images, STACVoxelKV, **kv_kwargs)
+            kv_kwargs = self.register_kv_mgr(mode, images, kv_cls, **kv_kwargs)
             kv_manager = self.model.aggregator.kv_manager
 
             window_size = kv_kwargs.get("recent_size", 0)
@@ -474,6 +483,13 @@ class StreamSession:
                                                               )
                         kv_pos_time = self.model.aggregator.update_kv_mgr_pos(pts3d, valid_mask, timing=debug_timing)
                         timing["kv_position_time"] = kv_pos_time
+                        # Feed real ego camera pose to MoGA (DH-KV)
+                        try:
+                            km = self.model.aggregator.kv_manager
+                            if km is not None and hasattr(km, 'update_camera_pose') and pose_enc is not None:
+                                km.update_camera_pose(pose_enc)
+                        except Exception as _e:
+                            logger.debug("update_camera_pose failed: %s", _e)
 
                         retrieval_time = 0.0
                         if frame_idx > max(buffer_size, 16):

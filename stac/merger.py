@@ -99,6 +99,8 @@ class VoxelKVMerger:
         self._voxel_alloc = init_voxels
         self._voxel_offset = 0
         self._token_count = 0
+        # Hard budget cap: maximum voxel count (0 = unlimited)
+        self._voxel_max = int(kwargs.get("voxel_max", 0))
 
         # ---- PIVOT POOL (merged tokens) ----
         self.piv_cap = int(pivot_cap)
@@ -217,6 +219,9 @@ class VoxelKVMerger:
 
     def ensure_capacity(self, V_needed: int):
         self._voxel_offset = max(V_needed, self._voxel_offset)
+        # Apply hard budget cap if set
+        if hasattr(self, '_voxel_max') and self._voxel_max > 0:
+            V_needed = min(V_needed, self._voxel_max)
         if V_needed <= self._voxel_alloc:
             return
         V_old = self._voxel_alloc

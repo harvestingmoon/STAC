@@ -411,6 +411,10 @@ class VoCacheVoxelKV(STACVoxelKV):
             mode = "default"
         if hasattr(self._vm, '_voxel_zones') and self._vm._voxel_zones.numel() > 0:
             self._vstore.update_voxel_zones(self._vm._voxel_zones)
+        # technique C: give the store the frame clock so it can fit/apply the
+        # time deformation (no-op unless VOCACHE_DEFORM_RANK>0)
+        if hasattr(self._vstore, 'set_time'):
+            self._vstore.set_time(self._frame_count)
         self._vstore.insert_and_merge(
             K_new=K_drop.view(L * H, T_d, D),
             V_new=V_drop.view(L * H, T_d, D),

@@ -412,9 +412,13 @@ class VoCacheVoxelKV(STACVoxelKV):
         if hasattr(self._vm, '_voxel_zones') and self._vm._voxel_zones.numel() > 0:
             self._vstore.update_voxel_zones(self._vm._voxel_zones)
         # technique C: give the store the frame clock so it can fit/apply the
-        # time deformation (no-op unless VOCACHE_DEFORM_RANK>0)
+        # time deformation (no-op unless VOCACHE_DEFORM_RANK>0). Also pass the
+        # ego pose so VOCACHE_DEFORM_BASIS=pose can condition on heading.
         if hasattr(self._vstore, 'set_time'):
-            self._vstore.set_time(self._frame_count)
+            self._vstore.set_time(self._frame_count,
+                                  theta=self._vehicle_theta_cam,
+                                  speed=self._vehicle_v,
+                                  omega=self._vehicle_omega)
         self._vstore.insert_and_merge(
             K_new=K_drop.view(L * H, T_d, D),
             V_new=V_drop.view(L * H, T_d, D),

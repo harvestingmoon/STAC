@@ -67,15 +67,25 @@ class CompactMerger:
         self._deform_rank = int(os.environ.get('VOCACHE_DEFORM_RANK', '0'))
         self._deform_period = float(os.environ.get('VOCACHE_DEFORM_PERIOD', '50'))
         self._deform_lr = float(os.environ.get('VOCACHE_DEFORM_LR', '0.2'))
+        # Conditioning variable (design #1): same coefficient count B either way,
+        # so the comparison is byte-for-byte fair; only the conditioning changes.
+        #   'time'      : Fourier in frame index   (technique C, original)
+        #   'pose'      : Fourier in ego heading   (pose-conditioned)
+        #   'pose+speed': [1, cos th, sin th, v_hat, omega_hat]
+        self._deform_basis = os.environ.get('VOCACHE_DEFORM_BASIS', 'time').lower()
         merger_kwargs.pop('deform_rank', None)
         merger_kwargs.pop('deform_period', None)
         merger_kwargs.pop('deform_lr', None)
+        merger_kwargs.pop('deform_basis', None)
         self._deform_on = self._deform_rank != 0
         self._n_harm = max(0, self._deform_rank)
         self._B = 1 + 2 * self._n_harm
         self._W_K = None
         self._W_V = None
         self._t = 0.0
+        self._theta = None
+        self._speed = None
+        self._omega = None
 
         # Internal merger: stores only L "heads" (one per layer)
         internal_kwargs = merger_kwargs.copy()
@@ -88,13 +98,34 @@ class CompactMerger:
         self.head_dim = internal_kwargs.get("head_dim", 64)
 
     # ── technique C: time-conditioned store ───────────────────────────────
-    def set_time(self, t: float):
-        """Tell the store which frame it is (called once per frame, causally)."""
+    def set_time(self, t: float, theta: float = None, speed: float = None,
+                 omega: float = None):
+        """Frame clock plus (optionally) the ego pose, for pose conditioning."""
         self._t = float(t)
+        if theta is not None:
+            self._theta = float(theta)
+        if speed is not None:
+            self._speed = float(speed)
+        if omega is not None:
+            self._omega = float(omega)
 
     def _psi(self, dtype, device):
-        return _time_basis(self._t, self._n_harm, self._deform_period).to(
-            dtype=dtype, device=device)
+        basis = self._deform_basis
+        if basis == 'time' or self._theta is None:
+            vals = _time_basis(self._t, self._n_harm, self._deform_period)
+        elif basis == 'pose':
+            cols = [1.0]
+            for k in range(1, self._n_harm + 1):
+                cols += [math.cos(k * self._theta), math.sin(k * self._theta)]
+            vals = torch.tensor(cols, dtype=torch.float32)
+        else:  # 'pose+speed'
+            cols = [1.0, math.cos(self._theta), math.sin(self._theta),
+                    float(self._speed or 0.0),
+                    float(abs(self._omega or 0.0) / math.pi)]
+            while len(cols) < self._B:
+                cols.append(0.0)
+            vals = torch.tensor(cols[:self._B], dtype=torch.float32)
+        return vals.to(dtype=dtype, device=device)
 
     def _fit_deform(self, K_compact, V_compact):
         """LMS on the per-layer mean of the compacted features (no backprop)."""
